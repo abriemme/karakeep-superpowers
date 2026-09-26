@@ -170,10 +170,15 @@ uv run python -m app.sync.maintenance retag                  # count bookmarks m
 uv run python -m app.sync.maintenance retag --apply          # re-derive & attach tags
 ```
 
-Environment:
+Environment: copy `.env.example` to `.env` and fill it in. `app/config.py`
+auto-loads `.env` at import (via `python-dotenv`), so `uv run` picks it up with
+no `export`; a real shell variable or CI value takes precedence over the file.
+`.env` is git-ignored. In Docker/prod, pass the variables through the
+environment (e.g. `docker run --env-file .env`) rather than baking them in.
 
 | Variable | Purpose |
 |---|---|
+| `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Temporal server (default `localhost:7233` / `default`) |
 | `KARAKEEP_URL`, `KARAKEEP_TOKEN` | Karakeep instance + API token (required) |
 | `KARAKEEP_LIST_ID` | optional list added to *every* bookmark, on top of the classified ones |
 | `DATA_DIR` | `session.json` (instagrapi), `seen.json` (dedup), `collections.json` (cache) |

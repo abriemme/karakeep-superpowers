@@ -11,6 +11,16 @@ import os
 import subprocess
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load a local ``.env`` (if present) before reading any variable below, so
+# `uv run python -m app.worker` / `app.starter` pick it up without an explicit
+# `export`. Existing environment variables win (``override=False``), so the
+# shell and CI (``GIT_SHA``, etc.) stay authoritative; in Docker/prod, pass the
+# variables through the environment (e.g. ``--env-file``) instead of shipping a
+# ``.env`` in the image.
+load_dotenv()
+
 # Logical name of the worker deployment. It must stay stable over time: it is
 # the identity under which all versions (build_ids) succeed one another.
 DEPLOYMENT_NAME = "ig-to-karakeep"
