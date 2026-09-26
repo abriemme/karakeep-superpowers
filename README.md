@@ -104,6 +104,9 @@ flowchart LR
   `TestModel` (structured output, no API key needed).
 - **CI** ([ci.yml](.github/workflows/ci.yml)): ruff lint + format check, then
   tests + replay, then a Docker image tagged with the SHA, pushed to GHCR.
+- **Pre-commit** ([.pre-commit-config.yaml](.pre-commit-config.yaml)): the same
+  ruff gate locally, plus `uv.lock` freshness (CI installs `--frozen`),
+  YAML/TOML syntax and GitHub Actions workflow validation.
 - **Unsandboxed workflow runner**: pydantic-ai depends on beartype, which
   monkey-patches the import machinery and is incompatible with the workflow
   sandbox; the workflow code stays deterministic, so this is safe (and
@@ -148,6 +151,7 @@ automatically).
 ```bash
 uv sync --group ig        # deps incl. instagrapi (worker machine)
 uv run pytest             # 43 tests: unit + time-skipping + replay
+uv run pre-commit install # commit gate: ruff, uv.lock, YAML/TOML, workflows
 ```
 
 Run against a local Temporal server:
