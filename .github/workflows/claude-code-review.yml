@@ -23,36 +23,13 @@ jobs:
         with:
           fetch-depth: 1
 
-      # A secret pasted with stray whitespace produces a malformed bearer token,
-      # and the action then fails with an opaque `is_error:true` after ~70ms (no
-      # model call, no cost). The stored secret here is wrapped across lines, so
-      # strip *all* whitespace rather than just trimming the ends: an OAuth
-      # token contains none, and a per-line trim would leave the embedded
-      # newline in place (which $GITHUB_ENV rejects outright).
-      - name: Normalize the OAuth token
-        env:
-          RAW_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          token=$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')
-          if [ -z "$token" ]; then
-            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is empty or unset. Generate one with 'claude setup-token' and store it as a repository secret."
-            exit 1
-          fi
-          if [ "$token" != "$RAW_TOKEN" ]; then
-            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN contains whitespace; using the stripped value. Re-save the secret as a single line with no surrounding spaces."
-          fi
-          # Register the stripped value for masking *before* exporting it: the
-          # runner only masks the secret exactly as stored, not this variant.
-          echo "::add-mask::$token"
-          echo "CLAUDE_CODE_OAUTH_TOKEN=$token" >> "$GITHUB_ENV"
-
       - name: Run Claude Code Review
         uses: anthropics/claude-code-action@v1
         with:
           # Uses a Claude subscription (Pro/Max) via OAuth token instead of a
           # pay-as-you-go API key. Generate it locally with `claude setup-token`
           # and store it as the CLAUDE_CODE_OAUTH_TOKEN repository secret.
-          claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
