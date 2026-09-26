@@ -714,7 +714,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "logfire", extra = ["system-metrics"] },
-    { name = "pydantic-ai" },
+    { name = "pydantic-ai", extra = ["temporal"] },
     { name = "pydantic-ai-slim", extra = ["openai"] },
     { name = "requests" },
     { name = "temporalio" },
@@ -736,7 +736,7 @@ ig = [
 [package.metadata]
 requires-dist = [
     { name = "logfire", extras = ["system-metrics"], specifier = ">=4.41.0" },
-    { name = "pydantic-ai", specifier = ">=2.37.0" },
+    { name = "pydantic-ai", extras = ["temporal"], specifier = ">=2.37.0" },
     { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=2.37.0" },
     { name = "requests", specifier = ">=2.32" },
     { name = "temporalio", specifier = ">=1.32.0" },
@@ -1469,6 +1469,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/df/36/b113d7e4c2aeca7e0936c88d836e0eb4b0a20fcc4994ea3f2e19e317982c/pydantic_ai-2.37.0-py3-none-any.whl", hash = "sha256:03a58cdd5242f379142f313a128207f705ee19b6226ee9085aa832c54c1a2685", size = 9453, upload-time = "2026-09-01T02:07:27.42Z" },
 ]
 
+[package.optional-dependencies]
+temporal = [
+    { name = "pydantic-ai-slim", extra = ["temporal"] },
+]
+
 [[package]]
 name = "pydantic-ai-slim"
 version = "2.37.0"
@@ -1516,6 +1521,9 @@ mcp = [
 openai = [
     { name = "openai" },
     { name = "tiktoken" },
+]
+temporal = [
+    { name = "temporalio" },
 ]
 web = [
     { name = "starlette" },
