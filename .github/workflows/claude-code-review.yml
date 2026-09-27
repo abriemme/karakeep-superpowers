@@ -3,7 +3,7 @@ name: Claude Code Review
 # Automatically ask Claude to review every pull request.
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, ready_for_review]
 
 concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
@@ -12,6 +12,8 @@ concurrency:
 jobs:
   claude-review:
     name: Review with Claude
+    # Skip drafts; the ready_for_review trigger picks them up once ready.
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -34,18 +36,70 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            Review this pull request and leave inline comments where useful.
-            This is a Python + Temporal project (Instagram -> Karakeep sync).
-            Focus on:
-            - Correctness bugs and edge cases
-            - Temporal-specific pitfalls (non-determinism in workflows,
-              activity vs workflow boundaries, retry/idempotency)
-            - Security issues (secret handling, input validation)
-            - Test coverage gaps
+            Review this pull request. The project is karakeep-superpowers:
+            a Python + Temporal service that syncs Instagram saves into
+            Karakeep and enriches them. Workflow code lives in
+            app/sync/workflow.py, activities in app/sync/activities.py,
+            API clients in app/sync/instagram.py and app/sync/karakeep.py.
 
-            Be concise. Only flag real issues; do not comment on style that
-            `ruff` already enforces. Use inline comments for specific lines and
-            a short summary comment for the overall assessment.
-          # Allow Claude to read the diff and post inline review comments.
+            Process:
+            1. Run `gh pr view` and `gh pr diff` to understand the change.
+               Read surrounding source files when the diff alone is not
+               enough to judge correctness.
+            2. If this PR was already reviewed on an earlier push, list the
+               existing review comments
+               (`gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments`)
+               and only comment on new or still-unaddressed problems. Never
+               repeat feedback that was already given.
+
+            Review priorities, in order:
+            1. Correctness: logic errors, broken edge cases (empty API
+               pages, pagination, partial failures, missing fields in
+               external API responses), error handling that swallows or
+               corrupts data.
+            2. Temporal pitfalls:
+               - Non-determinism in workflow code: I/O, network calls,
+                 `time.time`/`datetime.now`, `random`, `uuid4`, environment
+                 reads, or iteration over unordered collections. Workflows
+                 must use `workflow.now()` and deterministic APIs; side
+                 effects belong in activities.
+               - Replay compatibility: changed workflow logic must still
+                 replay the histories committed in tests/histories/, or be
+                 gated behind `workflow.patched()`.
+               - Activities: idempotency under retry, missing or
+                 inappropriate timeouts/retry policies, no heartbeat on
+                 long-running work.
+            3. Security: secrets or tokens leaking into logs or workflow
+               history payloads, unvalidated data from the Instagram or
+               Karakeep APIs used unsafely.
+            4. Tests: new behavior with no test, or tests that cannot fail.
+
+            Do NOT comment on:
+            - Style, formatting, or import order (ruff and pre-commit
+              already enforce these in CI).
+            - uv.lock or other generated files.
+            - Coverage percentages (pytest enforces a threshold).
+            - Code this PR does not touch, subjective preferences, or
+              anything you are not reasonably confident is a real problem.
+
+            Reporting:
+            - For each finding, post an inline comment
+              (mcp__github_inline_comment__create_inline_comment) anchored
+              to the exact changed lines: one issue per comment, prefixed
+              with a severity tag — [critical] (must fix: bugs, data loss,
+              security, determinism violations), [important] (should fix),
+              or [minor] (take it or leave it) — and include a concrete fix,
+              as a GitHub ```suggestion block when it fits in a few lines.
+            - Cap inline comments at the 8 most important findings; quality
+              over quantity. Only flag what you would fix yourself.
+            - Finish with one short summary comment: a 2-3 sentence verdict
+              plus a one-line-per-finding list. Post it with
+              `gh pr comment ${{ github.event.pull_request.number }} --edit-last --create-if-none --body ...`
+              so re-reviews update the same comment instead of stacking new
+              ones. If there are no real issues, post only that summary
+              saying the change looks good — do not invent findings.
+            - Write all comments in English.
+          # Allow Claude to read the diff and prior comments, post inline
+          # review comments, and maintain a single summary comment.
           claude_args: |
-            --allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api repos/${{ github.repository }}/pulls:*)"
