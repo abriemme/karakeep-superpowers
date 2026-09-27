@@ -1,16 +1,44 @@
-# Instagram → Karakeep, orchestrated with Temporal
+# karakeep-superpowers
 
-[![CI](https://github.com/abriemme/temporal-tests/actions/workflows/ci.yml/badge.svg)](https://github.com/abriemme/temporal-tests/actions/workflows/ci.yml)
+[![CI](https://github.com/abriemme/karakeep-superpowers/actions/workflows/ci.yml/badge.svg)](https://github.com/abriemme/karakeep-superpowers/actions/workflows/ci.yml)
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue)](.python-version)
 [![Temporal](https://img.shields.io/badge/Temporal-Worker%20Versioning-orange)](https://docs.temporal.io/develop/python/worker-versioning)
 [![pydantic-ai](https://img.shields.io/badge/LLM-pydantic--ai-green)](https://ai.pydantic.dev)
 
+**Agentic superpowers for [Karakeep](https://karakeep.app/), orchestrated with
+[Temporal](https://temporal.io/).**
+
+Karakeep is great at storing bookmarks; this repo makes the instance *curate
+itself*. LLM agents ([pydantic-ai](https://ai.pydantic.dev)) do the thinking —
+titling, summarising, tagging, classifying into lists — and Temporal does the
+running: durable, replayable, versioned workflows that survive crashes,
+rate-limits, and redeploys without hand-rolled state files or cron glue.
+
+The pattern every superpower follows:
+
+- **Workflows** stay pure and deterministic — pagination cursors, dedup,
+  pacing, and circuit-breakers live in workflow state, not on disk;
+- **Activities** are thin wrappers over a unit-testable service layer (all the
+  Karakeep and source-API I/O);
+- **Agents** produce structured output (pydantic models), are tested offline
+  with `TestModel`, and pick from the instance's *actual* lists/tags rather
+  than hallucinating new ones;
+- **Deterministic facts** are derived without an LLM wherever metadata is
+  enough — the agent only handles what genuinely needs judgment.
+
+## Superpowers
+
+| Superpower | Status | What it does |
+|---|---|---|
+| **Instagram saved-posts sync** | ✅ shipped | Nightly, every saved post becomes an enriched Karakeep bookmark: LLM title/summary/tags/list routing, hybrid deterministic+LLM tags, media uploaded as assets, collection→list mapping. |
+| More enrichment/organisation workflows | 🔜 | The worker, versioning, testing, and agent scaffolding here are the foundation for further agentic curation of the instance. |
+
+## Superpower: Instagram saved-posts sync
+
 A production-grade rewrite of a real automation: every night, the posts saved
-on an Instagram account are turned into enriched bookmarks in
-[Karakeep](https://karakeep.app/). It was previously a Python script driven by
-n8n over HTTP; it is now a **Temporal application** — durable, replayable, and
-testable — with **LLM-powered enrichment** (title, summary, tags, and routing
-into the right Karakeep lists) via [pydantic-ai](https://ai.pydantic.dev).
+on an Instagram account are turned into enriched bookmarks in Karakeep. It was
+previously a Python script driven by n8n over HTTP; it is now a Temporal
+application with LLM-powered enrichment.
 
 Each saved post becomes a bookmark with:
 
@@ -31,7 +59,7 @@ were never uploaded. Backfills page through the whole history with a cursor
 that lives in the **workflow state** — an interrupted run resumes on its own,
 no `cursor.json` on disk.
 
-## Why Temporal (what the n8n version had to hand-roll)
+### Why Temporal (what the n8n version had to hand-roll)
 
 | Hand-rolled in the n8n script | Temporal primitive |
 |---|---|
@@ -42,7 +70,7 @@ no `cursor.json` on disk.
 | `time.sleep` pacing, lost on crash | `workflow.sleep` timers (deterministic, replayable) |
 | "did it work?" status endpoint | workflow result + history in the Temporal UI |
 
-## Architecture
+### Architecture
 
 ```mermaid
 flowchart LR
@@ -115,7 +143,7 @@ flowchart LR
 app/
   config.py            # env-based settings + build_id resolution (git SHA)
   observability.py     # optional Logfire instrumentation (pydantic-ai + metrics)
-  sync/
+  sync/                # the Instagram saved-posts superpower
     models.py          # SyncInput/FetchPage*/Push*/SyncSummary, MediaItem, EnrichedBookmark (no I/O)
     workflow.py        # IgSyncWorkflow: pagination, dedup, ordering, pacing, cooldown, reconcile
     activities.py      # thin @activity.defn wrappers + per-post orchestration
@@ -212,7 +240,7 @@ anything reaches production.
 ## Docker
 
 ```bash
-docker build --build-arg GIT_SHA=$(git rev-parse HEAD) -t ig-to-karakeep:$(git rev-parse HEAD) .
+docker build --build-arg GIT_SHA=$(git rev-parse HEAD) -t karakeep-superpowers:$(git rev-parse HEAD) .
 ```
 
 CI builds and pushes `ghcr.io/<repo>:<sha>` (default branch only).
