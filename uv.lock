@@ -716,6 +716,7 @@ dependencies = [
     { name = "logfire", extra = ["system-metrics"] },
     { name = "pydantic-ai", extra = ["temporal"] },
     { name = "pydantic-ai-slim", extra = ["openai"] },
+    { name = "python-dotenv" },
     { name = "requests" },
     { name = "temporalio" },
 ]
@@ -738,6 +739,7 @@ requires-dist = [
     { name = "logfire", extras = ["system-metrics"], specifier = ">=4.41.0" },
     { name = "pydantic-ai", extras = ["temporal"], specifier = ">=2.37.0" },
     { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=2.37.0" },
+    { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "requests", specifier = ">=2.32" },
     { name = "temporalio", specifier = ">=1.32.0" },
 ]
@@ -1419,10 +1421,10 @@ resolution-markers = [
     "sys_platform == 'android'",
 ]
 dependencies = [
-    { name = "annotated-types", marker = "sys_platform == 'android'" },
-    { name = "pydantic-core", version = "2.41.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'android'" },
-    { name = "typing-extensions", marker = "sys_platform == 'android'" },
-    { name = "typing-inspection", marker = "sys_platform == 'android'" },
+    { name = "annotated-types" },
+    { name = "pydantic-core", version = "2.41.5", source = { registry = "https://pypi.org/simple" } },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/69/44/36f1a6e523abc58ae5f928898e4aca2e0ea509b5aa6f6f392a5d882be928/pydantic-2.12.5.tar.gz", hash = "sha256:4d351024c75c0f085a9febbb665ce8c0c6ec5d30e903bdb6394b7ede26aebb49", size = 821591, upload-time = "2025-11-26T15:11:46.471Z" }
 wheels = [
@@ -1431,7 +1433,7 @@ wheels = [
 
 [package.optional-dependencies]
 email = [
-    { name = "email-validator", marker = "sys_platform == 'android'" },
+    { name = "email-validator" },
 ]
 
 [[package]]
@@ -1442,10 +1444,10 @@ resolution-markers = [
     "sys_platform != 'android'",
 ]
 dependencies = [
-    { name = "annotated-types", marker = "sys_platform != 'android'" },
-    { name = "pydantic-core", version = "2.46.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'android'" },
-    { name = "typing-extensions", marker = "sys_platform != 'android'" },
-    { name = "typing-inspection", marker = "sys_platform != 'android'" },
+    { name = "annotated-types" },
+    { name = "pydantic-core", version = "2.46.5", source = { registry = "https://pypi.org/simple" } },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/53/ef/fc4f868f4e2cee79f863883abffceff107875f569b848507319842d2a681/pydantic-2.13.5.tar.gz", hash = "sha256:51a9c5f7b2f8e636f04c6cada605d9b6a3bf1348fdf945a3d8869b19bba0ee08", size = 845750, upload-time = "2026-08-28T14:04:00.916Z" }
 wheels = [
@@ -1454,7 +1456,7 @@ wheels = [
 
 [package.optional-dependencies]
 email = [
-    { name = "email-validator", marker = "sys_platform != 'android'" },
+    { name = "email-validator" },
 ]
 
 [[package]]
@@ -1538,7 +1540,7 @@ resolution-markers = [
     "sys_platform == 'android'",
 ]
 dependencies = [
-    { name = "typing-extensions", marker = "sys_platform == 'android'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/71/70/23b021c950c2addd24ec408e9ab05d59b035b39d97cdc1130e1bce647bb6/pydantic_core-2.41.5.tar.gz", hash = "sha256:08daa51ea16ad373ffd5e7606252cc32f07bc72b28284b6bc9c6df804816476e", size = 460952, upload-time = "2025-11-04T13:43:49.098Z" }
 
@@ -1550,7 +1552,7 @@ resolution-markers = [
     "sys_platform != 'android'",
 ]
 dependencies = [
-    { name = "typing-extensions", marker = "sys_platform != 'android'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/af/f9/8a06bea35ef8daf588f707784c973a7046e0034c8d8cfb08828eeffb8b75/pydantic_core-2.46.5.tar.gz", hash = "sha256:10416c15b8839ecc4ef4d0885da76da6fd0f67333a0eb8aff6d93c4b8f2910fc", size = 472262, upload-time = "2026-08-28T10:01:31.677Z" }
 wheels = [
@@ -2014,8 +2016,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography", marker = "sys_platform != 'android'" },
-    { name = "jeepney", marker = "sys_platform != 'android'" },
+    { name = "cryptography" },
+    { name = "jeepney" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [

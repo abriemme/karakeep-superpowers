@@ -102,8 +102,12 @@ flowchart LR
   present, so tests and CI stay silent.
 - **LLM tests without network**: the agent is exercised with pydantic-ai's
   `TestModel` (structured output, no API key needed).
-- **CI** ([ci.yml](.github/workflows/ci.yml)): ruff lint + format check, then
+- **CI** ([ci.yml](.github/workflows/ci.yml)): the pre-commit hooks, then
   tests + replay, then a Docker image tagged with the SHA, pushed to GHCR.
+- **Pre-commit** ([.pre-commit-config.yaml](.pre-commit-config.yaml)): ruff
+  check + format, `uv.lock` freshness, YAML/TOML syntax and GitHub Actions
+  workflow validation. The CI lint job runs the same hooks at the same pinned
+  revs, so a clean local commit means a green lint job.
 - **Unsandboxed workflow runner**: pydantic-ai depends on beartype, which
   monkey-patches the import machinery and is incompatible with the workflow
   sandbox; the workflow code stays deterministic, so this is safe (and
@@ -148,6 +152,7 @@ automatically).
 ```bash
 uv sync --group ig        # deps incl. instagrapi (worker machine)
 uv run pytest             # 43 tests: unit + time-skipping + replay
+uv run pre-commit install # commit gate: ruff, uv.lock, YAML/TOML, workflows
 ```
 
 Run against a local Temporal server:
@@ -170,10 +175,15 @@ uv run python -m app.sync.maintenance retag                  # count bookmarks m
 uv run python -m app.sync.maintenance retag --apply          # re-derive & attach tags
 ```
 
-Environment:
+Environment: copy `.env.example` to `.env` and fill it in. `app/config.py`
+auto-loads `.env` at import (via `python-dotenv`), so `uv run` picks it up with
+no `export`; a real shell variable or CI value takes precedence over the file.
+`.env` is git-ignored. In Docker/prod, pass the variables through the
+environment (e.g. `docker run --env-file .env`) rather than baking them in.
 
 | Variable | Purpose |
 |---|---|
+| `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` | Temporal server (default `localhost:7233` / `default`) |
 | `KARAKEEP_URL`, `KARAKEEP_TOKEN` | Karakeep instance + API token (required) |
 | `KARAKEEP_LIST_ID` | optional list added to *every* bookmark, on top of the classified ones |
 | `DATA_DIR` | `session.json` (instagrapi), `seen.json` (dedup), `collections.json` (cache) |
