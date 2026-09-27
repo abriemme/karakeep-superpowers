@@ -18,8 +18,9 @@ CurationWorkflow  (Schedule "kk-curation-scheduled", daily 07:00 — after the 0
 │
 ├─ 1. snapshot_library        activity   dump lists + bookmarks to DATA_DIR, return path + stats
 ├─ 2. propose_reorg           activity   pydantic-ai agent → ReorgPlan (typed operations)
-├─ 3. validate_plan           in-workflow / pure fn   dry-run ops against snapshot, drop no-ops,
-│                                        enforce guard-rails (op count caps, no destructive ops)
+├─ 3. validate_plan           activity   dry-run ops against the snapshot (read from disk),
+│                                        drop no-ops, enforce guard-rails (op count caps,
+│                                        no destructive ops); pure core in validate.py
 ├─ 4. HUMAN GATE              @workflow.update "decide"  approve / reject / amend
 │                             wait_condition, timeout 48h → plan expires (reject)
 ├─ 5. apply_operations        activity   idempotent execution, one Karakeep call at a time
@@ -39,6 +40,16 @@ Key decisions (settled in the architecture discussion):
 - **Idempotent apply.** Every operation re-checks state before acting
   (same culture as `find_existing_bookmark` / `complete_existing` in
   `karakeep.py`), so activity retries are safe.
+- **Validation is an activity, not workflow code.** The dry-run needs the
+  snapshot, which only exists as a file under `DATA_DIR`, and the workflow
+  sandbox cannot do file I/O (same split as `load_seen`/`save_seen` in the
+  sync). `validate.py` stays pure functions over an in-memory snapshot; the
+  `validate_plan` activity loads the file and calls them.
+- **Idempotent record too.** `record_outcome` appends to
+  `curation-log.jsonl`, and a retry after a crash between write and ack
+  would duplicate the entry and skew the V4 metrics. Each line carries a
+  dedup key (workflow ID + op index); the activity skips keys already
+  present before appending.
 - **Two independent Schedules** (sync 03:00, curation 07:00). No chaining:
   simpler to reason about, replay, and pause independently.
 - **Workflow ID** `curation-YYYY-MM-DD`: natural dedup, readable history.
@@ -53,9 +64,9 @@ Key decisions (settled in the architecture discussion):
 | `app/curation/models.py` | `CurationInput`, `ReorgOp` (tagged union), `ReorgPlan`, `Decision`, `CurationReport` — dataclasses, no I/O, sandbox-safe (mirrors `app/sync/models.py`) |
 | `app/curation/snapshot.py` | build the library snapshot from `karakeep.iter_bookmarks()` + `fetch_lists()`; write/read `DATA_DIR/curation/snapshot-<date>.json` |
 | `app/curation/propose.py` | pydantic-ai agent (lazy import, same pattern as `enrich.py`); prompt gets a *compact* digest (per-list: name, size, sample titles/tags; orphans list), not the raw dump |
-| `app/curation/validate.py` | pure functions: dry-run each op against the snapshot, drop no-ops, cap op counts, forbid op types not yet allowed |
+| `app/curation/validate.py` | pure functions over an in-memory snapshot: dry-run each op, drop no-ops, cap op counts, forbid op types not yet allowed (no I/O — the activity loads the snapshot) |
 | `app/curation/apply.py` | execute approved ops via `karakeep.py` primitives (`_add_to_list`, `create_list`, …), collect per-op outcome |
-| `app/curation/activities.py` | thin Temporal wrappers: `snapshot_library`, `propose_reorg`, `apply_operations`, `record_outcome` |
+| `app/curation/activities.py` | thin Temporal wrappers: `snapshot_library`, `propose_reorg`, `validate_plan`, `apply_operations`, `record_outcome` (idempotent via dedup key: workflow ID + op index) |
 | `app/curation/workflow.py` | `CurationWorkflow`: orchestration + `@workflow.update decide` + `@workflow.query current_plan` |
 | `tests/test_curation_models.py` | op semantics, plan (de)serialization |
 | `tests/test_curation_validate.py` | dry-run, guard-rails, no-op elimination |
@@ -166,7 +177,8 @@ Adds the durable human gate and the apply step.
 - `apply.py` + `apply_operations` activity (idempotent, per-op outcomes)
 - `record_outcome` → `curation-log.jsonl`
 - `starter decide approve|reject [--date …]` CLI
-- tests: approve, reject, timeout, apply idempotence, replay determinism
+- tests: approve, reject, timeout, apply idempotence, record_outcome dedup
+  under retry, replay determinism
 - **Exit criterion:** one full cycle (propose → approve via CLI → applied in
   Karakeep) in production.
 
