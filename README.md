@@ -195,7 +195,7 @@ app/
     workflow.py        # YtSyncWorkflow: signatures, full sweep, dedup, batching, pacing
     activities.py      # thin @activity.defn wrappers + classify-then-push orchestration
     youtube.py         # YouTube Data API: OAuth refresh, playlists, items, details (service)
-    karakeep.py        # dedup index, lists, bookmark + tag + list membership (service)
+    karakeep.py        # dedup index, lists, bookmark push via karakeep-python-api (service)
     classify.py        # pydantic-ai agent: one thematic list per video (service)
     state.py           # playlists.json signature state (service)
   starter.py           # manual runs + Schedule creation (replaces the n8n triggers)

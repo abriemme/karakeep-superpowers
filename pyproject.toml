@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.2.3",
     "requests>=2.32",
     "temporalio>=1.32.0",
+    "karakeep-python-api>=1.9.0",
 ]
 
 # Instagram private-API client + TOTP, only needed on the machine that runs
@@ -59,6 +60,11 @@ testpaths = ["tests"]
 # Coverage runs on every `pytest` invocation (local and CI) so the threshold
 # below gates the same way everywhere.
 addopts = "--cov=app --cov-report=term-missing --cov-report=xml"
+filterwarnings = [
+    # karakeep-python-api's own type hints trip beartype's PEP 585
+    # deprecation warnings at import; third-party noise, not ours to fix.
+    "ignore:::karakeep_python_api",
+]
 
 [tool.coverage.run]
 branch = true

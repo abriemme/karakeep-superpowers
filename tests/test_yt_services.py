@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 import requests
+from karakeep_python_api import APIError
 
 import app.youtube.karakeep as karakeep_svc
 import app.youtube.state as state_svc
@@ -55,6 +56,52 @@ def test_playlist_state_missing_or_corrupt_file(tmp_path, monkeypatch) -> None:
 # --- Karakeep -----------------------------------------------------------------
 
 
+class ClientStub:
+    """Stand-in for ``KarakeepAPI`` (validation-disabled: raw dict payloads)."""
+
+    def __init__(self) -> None:
+        self.search_pages: list[dict] = []
+        self.search_cursors: list = []
+        self.lists_payload: dict = {"lists": []}
+        self.lists_calls = 0
+        self.create_response: dict = {"id": "b1"}
+        self.raise_on: set[str] = set()
+        self.tagged: list = []
+        self.added: list = []
+
+    def _maybe_raise(self, name: str) -> None:
+        if name in self.raise_on:
+            raise APIError(f"{name} failed")
+
+    def search_bookmarks(self, q, limit, cursor):
+        self.search_cursors.append(cursor)
+        return self.search_pages.pop(0)
+
+    def get_all_lists(self):
+        self.lists_calls += 1
+        return self.lists_payload
+
+    def create_a_new_bookmark(self, type, url, title):
+        self._maybe_raise("create")
+        return self.create_response
+
+    def attach_tags_to_a_bookmark(self, bookmark_id, tag_names):
+        self._maybe_raise("tag")
+        self.tagged.append((bookmark_id, tag_names))
+
+    def add_a_bookmark_to_a_list(self, list_id, bookmark_id):
+        self._maybe_raise("add")
+        self.added.append((list_id, bookmark_id))
+
+
+@pytest.fixture
+def kk(monkeypatch) -> ClientStub:
+    stub = ClientStub()
+    monkeypatch.setattr(karakeep_svc, "_client", stub)
+    monkeypatch.setattr(karakeep_svc, "_lists_cache", None)
+    return stub
+
+
 def test_extract_video_id_variants() -> None:
     extract = karakeep_svc.extract_video_id
     assert extract("https://www.youtube.com/watch?v=abcdefghijk") == "abcdefghijk"
@@ -65,107 +112,64 @@ def test_extract_video_id_variants() -> None:
     assert extract("") is None
 
 
-def test_existing_video_ids_paginates_and_extracts(monkeypatch) -> None:
-    pages = [
-        _Resp(
-            {
-                "bookmarks": [
-                    {"content": {"url": "https://www.youtube.com/watch?v=abcdefghijk"}},
-                    {"content": {"url": "https://example.com/not-youtube"}},
-                ],
-                "nextCursor": "c2",
-            }
-        ),
-        _Resp(
-            {
-                "bookmarks": [
-                    {"content": {"url": "https://youtu.be/ABCDEFGHIJ1?t=9"}},
-                ],
-                "nextCursor": None,
-            }
-        ),
+def test_existing_video_ids_paginates_and_extracts(kk: ClientStub) -> None:
+    kk.search_pages = [
+        {
+            "bookmarks": [
+                {"content": {"url": "https://www.youtube.com/watch?v=abcdefghijk"}},
+                {"content": {"url": "https://example.com/not-youtube"}},
+            ],
+            "nextCursor": "c2",
+        },
+        {
+            "bookmarks": [
+                {"content": {"url": "https://youtu.be/ABCDEFGHIJ1?t=9"}},
+            ],
+            "nextCursor": None,
+        },
     ]
-    calls = {"n": 0}
 
-    def fake_get(*a, **kw):
-        page = pages[calls["n"]]
-        calls["n"] += 1
-        return page
-
-    monkeypatch.setattr("app.youtube.karakeep.requests.get", fake_get)
     assert karakeep_svc.existing_video_ids() == {"abcdefghijk", "ABCDEFGHIJ1"}
-    assert calls["n"] == 2
+    assert kk.search_cursors == [None, "c2"]
 
 
-def test_fetch_lists_filters_smart_lists_and_caches(monkeypatch) -> None:
-    calls = {"n": 0}
-
-    def fake_get(*a, **kw):
-        calls["n"] += 1
-        return _Resp(
-            {
-                "lists": [
-                    {"id": "l1", "name": "Tech", "description": "Servers"},
-                    {"id": "l2", "name": "All videos", "type": "smart"},
-                    {"id": "l3", "name": "Cuisine", "type": "manual"},
-                ]
-            }
-        )
-
-    monkeypatch.setattr(karakeep_svc, "_lists_cache", None)
-    monkeypatch.setattr("app.youtube.karakeep.requests.get", fake_get)
+def test_fetch_lists_filters_smart_lists_and_caches(kk: ClientStub) -> None:
+    kk.lists_payload = {
+        "lists": [
+            {"id": "l1", "name": "Tech", "description": "Servers"},
+            {"id": "l2", "name": "All videos", "type": "smart"},
+            {"id": "l3", "name": "Cuisine", "type": "manual"},
+        ]
+    }
 
     assert karakeep_svc.fetch_lists() == [
         {"id": "l1", "name": "Tech", "description": "Servers"},
         {"id": "l3", "name": "Cuisine", "description": ""},
     ]
     karakeep_svc.fetch_lists()  # second call served from cache, no extra request
-    assert calls["n"] == 1
+    assert kk.lists_calls == 1
 
 
-def test_create_bookmark_success_and_already_exists(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.youtube.karakeep.requests.post",
-        lambda *a, **kw: _Resp({"id": "b1"}, status=201),
-    )
+def test_create_bookmark_success_and_already_exists(kk: ClientStub) -> None:
     assert karakeep_svc.create_bookmark("https://x", "t") == ("b1", False)
 
-    monkeypatch.setattr(
-        "app.youtube.karakeep.requests.post",
-        lambda *a, **kw: _Resp({"id": "b1", "alreadyExists": True}, status=200),
-    )
+    kk.create_response = {"id": "b1", "alreadyExists": True}
     assert karakeep_svc.create_bookmark("https://x", "t") == ("b1", True)
 
 
-def test_create_bookmark_failure_paths(monkeypatch) -> None:
-    def boom(*a, **kw):
-        raise requests.RequestException("down")
-
-    monkeypatch.setattr("app.youtube.karakeep.requests.post", boom)
-    assert karakeep_svc.create_bookmark("https://x", "t") == (None, False)
-
-    monkeypatch.setattr(
-        "app.youtube.karakeep.requests.post", lambda *a, **kw: _Resp({}, status=500)
-    )
+def test_create_bookmark_failure_returns_failed(kk: ClientStub) -> None:
+    # The client wraps HTTP and network errors alike into APIError.
+    kk.raise_on = {"create"}
     assert karakeep_svc.create_bookmark("https://x", "t") == (None, False)
 
 
-def test_tag_and_list_membership(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.youtube.karakeep.requests.post", lambda *a, **kw: _Resp({}, status=200)
-    )
+def test_tag_and_list_membership(kk: ClientStub) -> None:
     assert karakeep_svc.tag_bookmark("b1", ["youtube"]) is True
-
-    monkeypatch.setattr(
-        "app.youtube.karakeep.requests.put", lambda *a, **kw: _Resp({}, status=204)
-    )
     assert karakeep_svc.add_to_list("b1", "l1") is True
+    assert kk.tagged == [("b1", ["youtube"])]
+    assert kk.added == [("l1", "b1")]
 
-    def boom(*a, **kw):
-        raise requests.RequestException("down")
-
-    monkeypatch.setattr("app.youtube.karakeep.requests.post", boom)
-    monkeypatch.setattr("app.youtube.karakeep.requests.put", boom)
+    kk.raise_on = {"tag", "add"}
     assert karakeep_svc.tag_bookmark("b1", ["youtube"]) is False
     assert karakeep_svc.add_to_list("b1", "l1") is False
 
