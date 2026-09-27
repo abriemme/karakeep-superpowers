@@ -1,10 +1,20 @@
-"""Karakeep access: bookmark creation, assets, list membership, reconcile."""
+"""Karakeep access: bookmark creation, assets, list membership, reconcile.
+
+All Karakeep calls go through the community client
+(https://github.com/thiswillbeyourgithub/karakeep_python_api); ``requests``
+remains only for the Instagram CDN downloads, which are not Karakeep API
+calls. The client is created with ``disable_response_validation=True`` so
+responses stay the raw API dicts the reconcile index and the tests work with.
+"""
 
 from __future__ import annotations
 
 import contextlib
+import tempfile
+from pathlib import Path
 
 import requests
+from karakeep_python_api import APIError, KarakeepAPI
 
 from app.config import (
     ASSET_TYPES,
@@ -20,7 +30,9 @@ from app.sync.enrich import TITLE_MAX
 from app.sync.facts import NOTE_MAX
 from app.sync.models import EnrichedBookmark, MediaItem, PushOutcome
 
-TIMEOUT = 30
+# Process-wide client, created on first use so importing this module needs no
+# credentials (the constructor appends /api/v1/ to the base URL itself).
+_api: KarakeepAPI | None = None
 
 # Karakeep lists are stable within a run; fetched once per worker process and
 # reused so every bookmark sees the same names.
@@ -29,11 +41,15 @@ _lists_cache: list[dict] | None = None
 _bookmarks_by_url: dict[str, dict] | None = None
 
 
-def _headers() -> dict:
-    return {
-        "Authorization": f"Bearer {KARAKEEP_TOKEN}",
-        "Content-Type": "application/json",
-    }
+def api() -> KarakeepAPI:
+    global _api
+    if _api is None:
+        _api = KarakeepAPI(
+            api_key=KARAKEEP_TOKEN,
+            api_endpoint=KARAKEEP_URL,
+            disable_response_validation=True,
+        )
+    return _api
 
 
 # --- Lists -------------------------------------------------------------------
@@ -45,16 +61,10 @@ def _raw_lists(*, force: bool = False) -> list[dict]:
     if _lists_cache is not None and not force:
         return _lists_cache
     try:
-        r = requests.get(
-            f"{KARAKEEP_URL}/api/v1/lists",
-            headers=_headers(),
-            timeout=TIMEOUT,
-        )
-        r.raise_for_status()
-        payload = r.json()
+        payload = api().get_all_lists()
         raw = payload.get("lists", []) if isinstance(payload, dict) else payload
         _lists_cache = [{"id": item["id"], "name": item["name"]} for item in raw]
-    except requests.RequestException, ValueError, KeyError, TypeError:
+    except APIError, ValueError, KeyError, TypeError:
         _lists_cache = []
     return _lists_cache
 
@@ -80,20 +90,11 @@ def list_index() -> dict[str, list[str]]:
 
 def create_list(name: str, parent_id: str | None = None) -> str | None:
     """Create a Karakeep list and refresh the cache."""
-    body: dict = {"name": name, "icon": "📱"}
-    if parent_id:
-        body["parentId"] = parent_id
     try:
-        r = requests.post(
-            f"{KARAKEEP_URL}/api/v1/lists",
-            json=body,
-            headers=_headers(),
-            timeout=TIMEOUT,
-        )
-        r.raise_for_status()
-    except requests.RequestException:
+        created = api().create_a_new_list(name=name, icon="📱", parent_id=parent_id)
+    except APIError, ValueError:
         return None
-    new_id = r.json().get("id")
+    new_id = created.get("id") if isinstance(created, dict) else None
     if new_id and _lists_cache is not None:
         _lists_cache.append({"id": new_id, "name": name})
     return new_id
@@ -143,31 +144,20 @@ def _target_lists(
 
 
 def attach_tags(bookmark_id: str, tags: list[str]) -> bool:
-    """Attach tags to an existing bookmark (used by the retag maintenance)."""
+    """Attach tags to a bookmark (new imports and the retag maintenance)."""
     if not tags:
         return True
     try:
-        r = requests.post(
-            f"{KARAKEEP_URL}/api/v1/bookmarks/{bookmark_id}/tags",
-            json={"tags": [{"tagName": t} for t in tags]},
-            headers=_headers(),
-            timeout=TIMEOUT,
-        )
-    except requests.RequestException:
+        api().attach_tags_to_a_bookmark(bookmark_id, tag_names=tags)
+    except APIError, ValueError:
         return False
-    return r.status_code in (200, 201)
+    return True
 
 
 def _add_to_list(bookmark_id: str, list_id: str) -> None:
     try:
-        r = requests.put(
-            f"{KARAKEEP_URL}/api/v1/lists/{list_id}/bookmarks/{bookmark_id}",
-            headers=_headers(),
-            timeout=TIMEOUT,
-        )
-        if r.status_code not in (200, 204):
-            raise OSError(f"list add rejected ({r.status_code})")
-    except requests.RequestException as exc:
+        api().add_a_bookmark_to_a_list(list_id=list_id, bookmark_id=bookmark_id)
+    except APIError as exc:
         raise OSError(f"list add failed: {exc}") from exc
 
 
@@ -199,48 +189,38 @@ def download_cdn(url: str) -> bytes | None:
         return None
 
 
-def upload_asset(content: bytes, filename: str, mime: str) -> str | None:
-    """Upload a binary to Karakeep and return its asset id."""
+def upload_asset(content: bytes, filename: str) -> str | None:
+    """Upload a binary to Karakeep and return its asset id.
+
+    The client uploads from a path and derives the MIME type from the
+    extension, so the bytes take a detour through a temp file.
+    """
     try:
-        r = requests.post(
-            f"{KARAKEEP_URL}/api/v1/assets",
-            files={"file": (filename, content, mime)},
-            headers={"Authorization": _headers()["Authorization"]},  # no Content-Type
-            timeout=180,
-        )
-    except requests.RequestException:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / filename
+            path.write_bytes(content)
+            body = api().upload_a_new_asset(str(path))
+    except APIError, OSError:
         return None
-    if r.status_code not in (200, 201):
+    if not isinstance(body, dict):
         return None
-    body = r.json()
     return body.get("assetId") or body.get("id")
 
 
 def attach_asset(bookmark_id: str, asset_id: str, asset_type: str) -> bool:
     try:
-        r = requests.post(
-            f"{KARAKEEP_URL}/api/v1/bookmarks/{bookmark_id}/assets",
-            json={"id": asset_id, "assetType": asset_type},
-            headers=_headers(),
-            timeout=TIMEOUT,
-        )
-    except requests.RequestException:
+        api().attach_asset(bookmark_id, asset_id, asset_type)
+    except APIError:
         return False
-    return r.status_code in (200, 201)
+    return True
 
 
 def replace_asset(bookmark_id: str, old_asset_id: str, new_asset_id: str) -> bool:
-    """Replace an existing asset. Karakeep answers 204 with no body."""
     try:
-        r = requests.put(
-            f"{KARAKEEP_URL}/api/v1/bookmarks/{bookmark_id}/assets/{old_asset_id}",
-            json={"assetId": new_asset_id},
-            headers=_headers(),
-            timeout=60,
-        )
-    except requests.RequestException:
+        api().replace_asset(bookmark_id, old_asset_id, new_asset_id)
+    except APIError:
         return False
-    return r.status_code in (200, 201, 204)
+    return True
 
 
 def find_asset(bm: dict, asset_type: str) -> str | None:
@@ -253,9 +233,9 @@ def find_asset(bm: dict, asset_type: str) -> str | None:
 def asset_jobs(bm: dict | None, media: MediaItem) -> list[dict]:
     """Build the list of assets to send for this post.
 
-    Each job carries its source URL, its Karakeep type, and the id of the asset
-    to replace when applicable. Generalising avoids one branch per type in the
-    sender.
+    Each job carries its source URL (the extension of ``filename`` encodes the
+    MIME type), its Karakeep type, and the id of the asset to replace when
+    applicable. Generalising avoids one branch per type in the sender.
     """
     jobs: list[dict] = []
     code = media.code
@@ -274,7 +254,6 @@ def asset_jobs(bm: dict | None, media: MediaItem) -> list[dict]:
                     "replace": current if REPLACE_BANNER else None,
                     "url": thumb,
                     "filename": f"{code}.jpg",
-                    "mime": "image/jpeg",
                 }
             )
 
@@ -286,7 +265,6 @@ def asset_jobs(bm: dict | None, media: MediaItem) -> list[dict]:
                 "replace": existing("screenshot"),
                 "url": thumb,
                 "filename": f"{code}-screenshot.jpg",
-                "mime": "image/jpeg",
             }
         )
 
@@ -298,7 +276,6 @@ def asset_jobs(bm: dict | None, media: MediaItem) -> list[dict]:
                 "replace": None,
                 "url": media.video_url,
                 "filename": f"{code}.mp4",
-                "mime": "video/mp4",
             }
         )
 
@@ -317,9 +294,9 @@ def asset_jobs(bm: dict | None, media: MediaItem) -> list[dict]:
         if not already:
             for index, res in enumerate(media.resources[:MAX_CAROUSEL], start=1):
                 if res.video_url and "video" in ASSET_TYPES:
-                    url, ext, mime = res.video_url, "mp4", "video/mp4"
+                    url, ext = res.video_url, "mp4"
                 elif res.thumbnail_url:
-                    url, ext, mime = res.thumbnail_url, "jpg", "image/jpeg"
+                    url, ext = res.thumbnail_url, "jpg"
                 else:
                     continue
                 jobs.append(
@@ -328,7 +305,6 @@ def asset_jobs(bm: dict | None, media: MediaItem) -> list[dict]:
                         "replace": None,
                         "url": url,
                         "filename": f"{code}-{index}.{ext}",
-                        "mime": mime,
                     }
                 )
 
@@ -339,7 +315,6 @@ def asset_jobs(bm: dict | None, media: MediaItem) -> list[dict]:
                 "replace": None,
                 "url": media.profile_pic_url,
                 "filename": f"{media.username}.jpg",
-                "mime": "image/jpeg",
             }
         )
 
@@ -353,7 +328,7 @@ def push_assets(bookmark_id: str, jobs: list[dict]) -> dict[str, int]:
         content = download_cdn(job["url"])
         if not content:
             continue
-        new_id = upload_asset(content, job["filename"], job["mime"])
+        new_id = upload_asset(content, job["filename"])
         if not new_id:
             continue
         if job["replace"]:
@@ -390,23 +365,18 @@ def build_payload(media: MediaItem, enrichment: EnrichedBookmark) -> dict:
 def create_bookmark(media: MediaItem, enrichment: EnrichedBookmark) -> PushOutcome:
     """Create the bookmark, upload its assets and route it to its lists."""
     payload = build_payload(media, enrichment)
+    # POST /bookmarks takes no tags: they are attached in a second call.
+    tags = payload.pop("tags")
     try:
-        r = requests.post(
-            f"{KARAKEEP_URL}/api/v1/bookmarks",
-            json=payload,
-            headers=_headers(),
-            timeout=TIMEOUT,
-        )
-    except requests.RequestException:
+        created = api().create_a_new_bookmark(**payload)
+    except APIError, ValueError:
         return PushOutcome(status="failed")
 
-    if r.status_code not in (200, 201):
-        return PushOutcome(status="failed")
-
-    bookmark_id = r.json().get("id")
+    bookmark_id = created.get("id") if isinstance(created, dict) else None
     if not bookmark_id:
         return PushOutcome(status="imported")
 
+    attach_tags(bookmark_id, tags)
     assets = push_assets(bookmark_id, asset_jobs(None, media))
     placed: list[str] = []
     for list_id, name in _target_lists(media, enrichment):
@@ -430,17 +400,9 @@ def _normalise_url(url: str) -> str:
 def iter_bookmarks(page_size: int = 100):
     cursor = None
     while True:
-        params = {"limit": page_size}
-        if cursor:
-            params["cursor"] = cursor
-        r = requests.get(
-            f"{KARAKEEP_URL}/api/v1/bookmarks",
-            params=params,
-            headers=_headers(),
-            timeout=60,
-        )
-        r.raise_for_status()
-        payload = r.json()
+        payload = api().get_all_bookmarks(limit=page_size, cursor=cursor)
+        if not isinstance(payload, dict):
+            return
         bookmarks = payload.get("bookmarks", [])
         if not bookmarks:
             return

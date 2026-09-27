@@ -11,7 +11,7 @@ import asyncio
 import json
 
 import pytest
-import requests
+from karakeep_python_api import APIError
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import ActivityEnvironment
@@ -66,22 +66,30 @@ def test_build_payload_from_enrichment() -> None:
     enrichment = EnrichedBookmark(
         title="A great recipe", note="Pancakes, step by step", tags=["Food", " Baking "]
     )
-    payload = build_payload(MEDIA, enrichment)
+    media = MediaItem(
+        pk="1",
+        code="abc",
+        username="someone",
+        caption="",
+        taken_at="2024-05-01T10:00:00Z",
+    )
+    payload = build_payload(media, enrichment)
     assert payload["type"] == "link"
     assert payload["url"] == "https://www.instagram.com/p/abc/"
     assert payload["title"] == "A great recipe"
     assert payload["note"] == "Pancakes, step by step"
     assert payload["tags"] == ["food", "baking"]
+    # The publication date becomes createdAt (absent when unknown).
+    assert payload["createdAt"] == "2024-05-01T10:00:00Z"
+    assert "createdAt" not in build_payload(MEDIA, enrichment)
 
 
 def test_fetch_lists_parses_and_caches(monkeypatch) -> None:
     calls = {"n": 0}
 
-    class Resp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
+    class FakeApi:
+        def get_all_lists(self):
+            calls["n"] += 1
             return {
                 "lists": [
                     {"id": "l1", "name": "Cuisine & Vins", "icon": "🍷"},
@@ -89,12 +97,8 @@ def test_fetch_lists_parses_and_caches(monkeypatch) -> None:
                 ]
             }
 
-    def fake_get(*a, **kw):
-        calls["n"] += 1
-        return Resp()
-
     monkeypatch.setattr(karakeep_svc, "_lists_cache", None)
-    monkeypatch.setattr("app.sync.karakeep.requests.get", fake_get)
+    monkeypatch.setattr(karakeep_svc, "_api", FakeApi())
 
     assert fetch_lists() == [
         {"id": "l1", "name": "Cuisine & Vins"},
@@ -107,10 +111,11 @@ def test_fetch_lists_parses_and_caches(monkeypatch) -> None:
 def test_create_bookmark_unreachable_returns_failed(monkeypatch) -> None:
     monkeypatch.setattr(karakeep_svc, "_lists_cache", [])
 
-    def boom(*a, **kw):
-        raise requests.RequestException("down")
+    class FakeApi:
+        def create_a_new_bookmark(self, **kwargs):
+            raise APIError("down")
 
-    monkeypatch.setattr("app.sync.karakeep.requests.post", boom)
+    monkeypatch.setattr(karakeep_svc, "_api", FakeApi())
     assert create_bookmark(MEDIA, ENRICHMENT).status == "failed"
 
 
@@ -121,42 +126,42 @@ def test_create_bookmark_routes_to_classified_lists(monkeypatch) -> None:
         [{"id": "l1", "name": "Cuisine & Vins"}, {"id": "l2", "name": "Voyage"}],
     )
 
-    class FakeResponse:
-        status_code = 201
+    adds: list[tuple[str, str]] = []
+    tagged: list[list[str]] = []
 
-        def json(self):
+    class FakeApi:
+        def create_a_new_bookmark(self, **kwargs):
             return {"id": "bm-1"}
 
-    put_urls: list[str] = []
+        def attach_tags_to_a_bookmark(self, bookmark_id, tag_names=None, **kw):
+            tagged.append(tag_names)
+            return {"attached": []}
 
-    class PutResponse:
-        status_code = 204
+        def add_a_bookmark_to_a_list(self, list_id, bookmark_id):
+            adds.append((list_id, bookmark_id))
 
-    def fake_put(url, *a, **kw):
-        put_urls.append(url)
-        return PutResponse()
+    monkeypatch.setattr(karakeep_svc, "_api", FakeApi())
 
-    monkeypatch.setattr(
-        "app.sync.karakeep.requests.post", lambda *a, **kw: FakeResponse()
+    enrichment = EnrichedBookmark(
+        title="t", note="n", tags=["Food"], lists=["Cuisine & Vins"]
     )
-    monkeypatch.setattr("app.sync.karakeep.requests.put", fake_put)
-
-    enrichment = EnrichedBookmark(title="t", note="n", tags=[], lists=["Cuisine & Vins"])
     outcome = create_bookmark(MEDIA, enrichment)
     assert outcome.status == "imported"
     assert outcome.lists == ["Cuisine & Vins"]
+    # Tags are attached in a second call (POST /bookmarks takes none).
+    assert tagged == [["food"]]
     # Only the classified list is targeted (no KARAKEEP_LIST_ID in tests).
-    assert len(put_urls) == 1
-    assert "/lists/l1/bookmarks/bm-1" in put_urls[0]
+    assert adds == [("l1", "bm-1")]
 
 
 def test_fetch_lists_unreachable_returns_empty(monkeypatch) -> None:
     monkeypatch.setattr(karakeep_svc, "_lists_cache", None)
 
-    def boom(*a, **kw):
-        raise requests.RequestException("down")
+    class FakeApi:
+        def get_all_lists(self):
+            raise APIError("down")
 
-    monkeypatch.setattr("app.sync.karakeep.requests.get", boom)
+    monkeypatch.setattr(karakeep_svc, "_api", FakeApi())
     assert fetch_lists() == []
 
 
@@ -175,10 +180,11 @@ def test_build_payload_truncates_and_drops_blank_tags() -> None:
 def test_create_bookmark_bad_status_returns_failed(monkeypatch) -> None:
     monkeypatch.setattr(karakeep_svc, "_lists_cache", [])
 
-    class Rejected:
-        status_code = 500
+    class FakeApi:
+        def create_a_new_bookmark(self, **kwargs):
+            raise APIError("rejected", status_code=500)
 
-    monkeypatch.setattr("app.sync.karakeep.requests.post", lambda *a, **kw: Rejected())
+    monkeypatch.setattr(karakeep_svc, "_api", FakeApi())
     assert create_bookmark(MEDIA, ENRICHMENT).status == "failed"
 
 
@@ -190,27 +196,20 @@ def test_create_bookmark_appends_default_list_and_dedups(monkeypatch) -> None:
     # a classified list that resolves to the same id.
     monkeypatch.setattr(karakeep_svc, "KARAKEEP_LIST_ID", "l1")
 
-    class Created:
-        status_code = 201
+    adds: list[tuple[str, str]] = []
 
-        def json(self):
+    class FakeApi:
+        def create_a_new_bookmark(self, **kwargs):
             return {"id": "bm-9"}
 
-    put_urls: list[str] = []
+        def add_a_bookmark_to_a_list(self, list_id, bookmark_id):
+            adds.append((list_id, bookmark_id))
 
-    class PutOk:
-        status_code = 204
-
-    monkeypatch.setattr("app.sync.karakeep.requests.post", lambda *a, **kw: Created())
-    monkeypatch.setattr(
-        "app.sync.karakeep.requests.put",
-        lambda url, *a, **kw: (put_urls.append(url), PutOk())[1],
-    )
+    monkeypatch.setattr(karakeep_svc, "_api", FakeApi())
 
     enrichment = EnrichedBookmark(title="t", note="n", tags=[], lists=["Cuisine & Vins"])
     assert create_bookmark(MEDIA, enrichment).status == "imported"
-    assert len(put_urls) == 1  # l1 not added twice
-    assert "/lists/l1/bookmarks/bm-9" in put_urls[0]
+    assert adds == [("l1", "bm-9")]  # l1 not added twice
 
 
 def test_create_bookmark_suppresses_list_add_failure(monkeypatch) -> None:
@@ -219,42 +218,48 @@ def test_create_bookmark_suppresses_list_add_failure(monkeypatch) -> None:
         karakeep_svc, "_lists_cache", [{"id": "l1", "name": "Cuisine & Vins"}]
     )
 
-    class Created:
-        status_code = 201
-
-        def json(self):
+    class FakeApi:
+        def create_a_new_bookmark(self, **kwargs):
             return {"id": "bm-1"}
 
-    class PutRejected:
-        status_code = 500
+        def add_a_bookmark_to_a_list(self, list_id, bookmark_id):
+            raise APIError("rejected", status_code=500)
 
-    monkeypatch.setattr("app.sync.karakeep.requests.post", lambda *a, **kw: Created())
-    monkeypatch.setattr("app.sync.karakeep.requests.put", lambda *a, **kw: PutRejected())
+    monkeypatch.setattr(karakeep_svc, "_api", FakeApi())
 
     enrichment = EnrichedBookmark(title="t", note="n", tags=[], lists=["Cuisine & Vins"])
     assert create_bookmark(MEDIA, enrichment).status == "imported"
 
 
-def test_create_bookmark_suppresses_list_add_network_error(monkeypatch) -> None:
-    """A network failure on the list add is swallowed too (bookmark stays)."""
-    monkeypatch.setattr(
-        karakeep_svc, "_lists_cache", [{"id": "l1", "name": "Cuisine & Vins"}]
-    )
+def test_create_bookmark_without_id_reports_imported(monkeypatch) -> None:
+    """A creation that answers without an id cannot be enriched further."""
+    monkeypatch.setattr(karakeep_svc, "_lists_cache", [])
 
-    class Created:
-        status_code = 201
+    class FakeApi:
+        def create_a_new_bookmark(self, **kwargs):
+            return {}
 
-        def json(self):
+    monkeypatch.setattr(karakeep_svc, "_api", FakeApi())
+
+    outcome = create_bookmark(MEDIA, ENRICHMENT)
+    assert outcome.status == "imported"
+    assert outcome.assets == {} and outcome.lists == []
+
+
+def test_create_bookmark_survives_tag_attach_failure(monkeypatch) -> None:
+    """A failed tag attach must not fail the (already created) bookmark."""
+    monkeypatch.setattr(karakeep_svc, "_lists_cache", [])
+
+    class FakeApi:
+        def create_a_new_bookmark(self, **kwargs):
             return {"id": "bm-1"}
 
-    def put_boom(*a, **kw):
-        raise requests.RequestException("down")
+        def attach_tags_to_a_bookmark(self, bookmark_id, tag_names=None, **kw):
+            raise APIError("down")
 
-    monkeypatch.setattr("app.sync.karakeep.requests.post", lambda *a, **kw: Created())
-    monkeypatch.setattr("app.sync.karakeep.requests.put", put_boom)
+    monkeypatch.setattr(karakeep_svc, "_api", FakeApi())
 
-    enrichment = EnrichedBookmark(title="t", note="n", tags=[], lists=["Cuisine & Vins"])
-    assert create_bookmark(MEDIA, enrichment).status == "imported"
+    assert create_bookmark(MEDIA, ENRICHMENT).status == "imported"
 
 
 # --- Instagram ----------------------------------------------------------------
