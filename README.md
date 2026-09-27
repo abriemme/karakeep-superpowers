@@ -102,8 +102,12 @@ flowchart LR
   present, so tests and CI stay silent.
 - **LLM tests without network**: the agent is exercised with pydantic-ai's
   `TestModel` (structured output, no API key needed).
-- **CI** ([ci.yml](.github/workflows/ci.yml)): ruff lint + format check, then
+- **CI** ([ci.yml](.github/workflows/ci.yml)): the pre-commit hooks, then
   tests + replay, then a Docker image tagged with the SHA, pushed to GHCR.
+- **Pre-commit** ([.pre-commit-config.yaml](.pre-commit-config.yaml)): ruff
+  check + format, `uv.lock` freshness, YAML/TOML syntax and GitHub Actions
+  workflow validation. The CI lint job runs the same hooks at the same pinned
+  revs, so a clean local commit means a green lint job.
 - **Unsandboxed workflow runner**: pydantic-ai depends on beartype, which
   monkey-patches the import machinery and is incompatible with the workflow
   sandbox; the workflow code stays deterministic, so this is safe (and
@@ -148,6 +152,7 @@ automatically).
 ```bash
 uv sync --group ig        # deps incl. instagrapi (worker machine)
 uv run pytest             # 43 tests: unit + time-skipping + replay
+uv run pre-commit install # commit gate: ruff, uv.lock, YAML/TOML, workflows
 ```
 
 Run against a local Temporal server:

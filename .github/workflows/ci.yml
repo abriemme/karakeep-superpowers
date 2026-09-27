@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   lint:
-    name: Lint (ruff)
+    name: Lint (pre-commit)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -26,10 +26,19 @@ jobs:
       - name: Sync dependencies (from uv.lock)
         run: uv sync --frozen
 
-      - name: Ruff lint
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
+      # Hook environments (ruff, uv, the action-validator binary) are keyed on
+      # the config, so a rev bump rebuilds them and nothing else does.
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      # Runs the same hooks as the local commit gate, at the same pinned revs:
+      # ruff check + format, uv.lock freshness, YAML/TOML syntax, workflow
+      # schema. Autofixing hooks fail the job and print the diff they'd apply.
+      - name: Pre-commit (ruff, uv-lock, YAML/TOML, workflows)
+        run: uv run pre-commit run --all-files --show-diff-on-failure
 
   test:
     name: Tests + replay
