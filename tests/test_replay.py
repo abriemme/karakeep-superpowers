@@ -20,6 +20,7 @@ from temporalio.client import WorkflowHistory
 from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
 
 from app.sync import IgSyncWorkflow
+from app.youtube import YtSyncWorkflow
 
 HISTORIES_DIR = Path(__file__).parent / "histories"
 
@@ -45,7 +46,7 @@ async def test_replay_history(history_path: Path) -> None:
     # Unsandboxed for the same reason as the worker: pydantic-ai's beartype
     # dependency patches the import machinery, incompatible with the sandbox.
     replayer = Replayer(
-        workflows=[IgSyncWorkflow],
+        workflows=[IgSyncWorkflow, YtSyncWorkflow],
         workflow_runner=UnsandboxedWorkflowRunner(),
     )
     # Raises NondeterminismError if the current code diverges from the history.

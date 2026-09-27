@@ -48,8 +48,9 @@ select = [
 known-first-party = ["app"]
 
 [tool.ruff.lint.per-file-ignores]
-# Lazy re-export package: TYPE_CHECKING imports + runtime __getattr__.
+# Lazy re-export packages: TYPE_CHECKING imports + runtime __getattr__.
 "app/sync/__init__.py" = ["F401"]
+"app/youtube/__init__.py" = ["F401"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"

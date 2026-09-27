@@ -35,6 +35,16 @@ from app.sync import (
     push_to_karakeep,
     save_seen,
 )
+from app.youtube import (
+    YtSyncWorkflow,
+    fetch_existing_video_ids,
+    fetch_playlist_items,
+    fetch_playlists,
+    fetch_video_details,
+    load_playlist_state,
+    push_video,
+    save_playlist_state,
+)
 
 
 async def main() -> None:
@@ -54,8 +64,20 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[IgSyncWorkflow],
-        activities=[fetch_saved_page, load_seen, push_to_karakeep, save_seen],
+        workflows=[IgSyncWorkflow, YtSyncWorkflow],
+        activities=[
+            fetch_saved_page,
+            load_seen,
+            push_to_karakeep,
+            save_seen,
+            fetch_existing_video_ids,
+            fetch_playlist_items,
+            fetch_playlists,
+            fetch_video_details,
+            load_playlist_state,
+            push_video,
+            save_playlist_state,
+        ],
         # pydantic-ai (LLM enrichment in the push activity) relies on
         # beartype, which monkey-patches the import machinery and is
         # incompatible with the workflow sandbox. The workflow code itself

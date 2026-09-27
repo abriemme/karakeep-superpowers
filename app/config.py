@@ -113,6 +113,43 @@ COLLECTION_SCAN = int(os.environ.get("COLLECTION_SCAN", "60"))
 COLLECTION_CACHE_HOURS = float(os.environ.get("COLLECTION_CACHE_HOURS", "24"))
 
 
+# --- YouTube playlists -> Karakeep --------------------------------------------
+#
+# OAuth2 "installed app" credentials with a long-lived refresh token. The
+# YouTube Data API requires OAuth (an API key is not enough) to list *your*
+# playlists (`mine=true`).
+YOUTUBE_CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID", "")
+YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
+YOUTUBE_REFRESH_TOKEN = os.environ.get("YOUTUBE_REFRESH_TOKEN", "")
+
+# Karakeep list receiving every imported video (the umbrella "YouTube" list).
+# Empty to skip. Always excluded from the theme classifier's candidates.
+KARAKEEP_YOUTUBE_LIST_ID = os.environ.get("KARAKEEP_YOUTUBE_LIST_ID", "").strip()
+
+# Extra list ids never offered to the theme classifier (inbox/archive-style
+# lists that would attract everything).
+YT_EXCLUDED_LIST_IDS = {
+    t.strip() for t in os.environ.get("YT_EXCLUDED_LIST_IDS", "").split(",") if t.strip()
+}
+
+# Pagination guard-rails. A playlist page is 50 videos; a Karakeep search page
+# is 100 bookmarks. The playlist cap also bounds the activity-result payload
+# (Temporal caps a payload at 2 MB).
+YT_MAX_PLAYLIST_PAGES = int(os.environ.get("YT_MAX_PLAYLIST_PAGES", "20"))
+YT_MAX_BOOKMARK_PAGES = int(os.environ.get("YT_MAX_BOOKMARK_PAGES", "80"))
+
+# Cap on new videos bookmarked per run. The rest is picked up on a later run:
+# dedup is against Karakeep itself, so nothing is ever lost.
+YT_MAX_VIDEOS = int(os.environ.get("YT_MAX_VIDEOS", "200"))
+
+# Hours between two full sweeps that re-scan every playlist regardless of its
+# signature (safety net for the skip-unchanged optimisation).
+YT_FULL_SWEEP_HOURS = float(os.environ.get("YT_FULL_SWEEP_HOURS", "24"))
+
+# Playlist etag/itemCount signatures (skip-unchanged optimisation).
+PLAYLIST_STATE_FILE = DATA_DIR / "playlists.json"
+
+
 def get_build_id() -> str:
     """Return the git SHA to use as the ``build_id`` of the worker version.
 
