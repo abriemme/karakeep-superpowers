@@ -31,6 +31,7 @@ The pattern every superpower follows:
 | Superpower | Status | What it does |
 |---|---|---|
 | **Instagram saved-posts sync** | ✅ shipped | Nightly, every saved post becomes an enriched Karakeep bookmark: LLM title/summary/tags/list routing, hybrid deterministic+LLM tags, media uploaded as assets, collection→list mapping. |
+| **YouTube playlists sync** | ✅ shipped | Every 12 h, new videos in the account's playlists become Karakeep bookmarks: skip-unchanged playlist signatures, video-id dedup against Karakeep, LLM theme classification into the instance's actual lists. |
 | More enrichment/organisation workflows | 🔜 | The worker, versioning, testing, and agent scaffolding here are the foundation for further agentic curation of the instance. |
 
 ## Superpower: Instagram saved-posts sync
@@ -116,14 +117,46 @@ flowchart LR
   Instagram-collection → Karakeep-list routing. Transient errors are absorbed
   by the push activity's retry policy.
 
+## Superpower: YouTube playlists sync
+
+A rewrite of the "YouTube Playlists to Karakeep" n8n workflow. Every 12 hours,
+new videos in the account's playlists become Karakeep bookmarks, each routed
+into one thematic list by a pydantic-ai classifier.
+
+The pipeline:
+
+- **Skip-unchanged playlists** — each playlist carries an `etag:itemCount`
+  signature; only playlists whose signature moved since the last run are
+  re-fetched, with a daily **full sweep** as a safety net (n8n kept this in
+  `$getWorkflowStaticData`; here it is `playlists.json` + workflow logic).
+- **Dedup by video id** — existing YouTube bookmarks are paged out of Karakeep
+  once per run and the 11-character video id is extracted from each URL, so a
+  `&t=123s` suffix or a `youtu.be` short link never causes a duplicate.
+- **Detail enrichment** — durations, keywords and topic categories are batch
+  fetched (50 ids per call) and fed to the classifier.
+- **Theme classification** — the agent picks *one* list among the instance's
+  actual manual lists (umbrella + excluded lists filtered out), or none; the
+  answer is matched accent- and punctuation-insensitively, so a hallucinated
+  name degrades to "no theme" instead of misfiling. A classification failure
+  never blocks an import: the LLM output here is optional routing metadata.
+- **Minimal payload** — the bookmark is created with url + title only:
+  Karakeep crawls YouTube itself (description, thumbnail, yt-dlp archive, its
+  own AI tagging), then the `youtube` tag and list memberships are attached.
+
+Failure model: playlist signatures are only persisted at the end of a fully
+processed run and dedup is against Karakeep itself, so a crashed run re-scans
+some playlists but never duplicates a bookmark. Karakeep's own URL dedup
+(`alreadyExists`) is the belt to those braces.
+
 ## Engineering practices
 
 - **Worker Deployment Versioning**: the worker registers with `build_id` = git
   SHA; each execution stays pinned to its version (`VersioningBehavior.PINNED`).
-- **Tests (43)**: time-skipping workflow tests (`WorkflowEnvironment`), service
-  unit tests (facts, assets, reconcile, maintenance), `ActivityEnvironment`
-  tests, and a **replay test** that re-runs a committed JSON history to catch
-  determinism-breaking changes before deploy.
+- **Tests (131)**: time-skipping workflow tests (`WorkflowEnvironment`), service
+  unit tests (facts, assets, reconcile, maintenance, YouTube/Karakeep clients),
+  `ActivityEnvironment` tests, and **replay tests** that re-run committed JSON
+  histories (one per workflow) to catch determinism-breaking changes before
+  deploy.
 - **Observability**: optional [Logfire](https://logfire.pydantic.dev)
   instrumentation of the pydantic-ai agent and system metrics
   (`app/observability.py`), enabled at worker start; a no-op unless a token is
@@ -157,7 +190,15 @@ app/
     enrich.py          # pydantic-ai agent: title/note/tags + list routing (service)
     maintenance.py     # one-off retag / collections reconcile (CLI, no workflow)
     state.py           # seen.json dedup state (service)
-  starter.py           # manual sync run + nightly Schedule creation (replaces n8n)
+  youtube/             # the YouTube playlists superpower
+    models.py          # YtSyncInput/PlaylistInfo/VideoItem/PushVideo*/YtSyncSummary (no I/O)
+    workflow.py        # YtSyncWorkflow: signatures, full sweep, dedup, batching, pacing
+    activities.py      # thin @activity.defn wrappers + classify-then-push orchestration
+    youtube.py         # YouTube Data API: OAuth refresh, playlists, items, details (service)
+    karakeep.py        # dedup index, lists, bookmark push via karakeep-python-api (service)
+    classify.py        # pydantic-ai agent: one thematic list per video (service)
+    state.py           # playlists.json signature state (service)
+  starter.py           # manual runs + Schedule creation (replaces the n8n triggers)
   worker.py            # versioned worker (use_worker_versioning=True)
 tests/
   conftest.py           # start_time_skipping() fixture
@@ -167,6 +208,10 @@ tests/
   test_maintenance.py   # retag + collections reconcile utilities
   test_activities.py    # service-layer unit tests + ActivityEnvironment mechanics
   test_sync_workflow.py # time-skipping workflow tests (mocked activities)
+  test_yt_workflow.py   # YtSyncWorkflow time-skipping tests (mocked activities)
+  test_yt_activities.py # push_video orchestration (ActivityEnvironment)
+  test_yt_classify.py   # theme classifier tests (TestModel + loose name matching)
+  test_yt_services.py   # YouTube/Karakeep client + playlist-state unit tests
   test_replay.py        # replays tests/histories/*.json against current code
 scripts/
   generate_history.py   # (re)generates the replay histories
@@ -179,7 +224,7 @@ automatically).
 
 ```bash
 uv sync --group ig        # deps incl. instagrapi (worker machine)
-uv run pytest             # 43 tests: unit + time-skipping + replay
+uv run pytest             # 131 tests: unit + time-skipping + replay
 uv run pre-commit install # commit gate: ruff, uv.lock, YAML/TOML, workflows
 ```
 
@@ -192,6 +237,9 @@ uv run python -m app.starter schedule                        # nightly schedule
 uv run python -m app.starter sync                            # one-off sync
 uv run python -m app.starter sync --backfill                 # full history
 uv run python -m app.starter sync --reconcile                # complete missing assets
+uv run python -m app.starter yt-schedule                     # every 12h at :12
+uv run python -m app.starter yt                              # one-off YouTube sync
+uv run python -m app.starter yt --full-sweep                 # re-scan every playlist
 ```
 
 Maintenance utilities (run by hand, not workflows — dry-run by default):
@@ -227,6 +275,11 @@ environment (e.g. `docker run --env-file .env`) rather than baking them in.
 | `HASHTAG_SPAM_THRESHOLD` | above this hashtag count, the caption is treated as SEO noise |
 | `SYNC_COLLECTIONS`, `CREATE_MISSING_LISTS` | route collections to lists; create missing lists |
 | `COLLECTION_SCAN`, `COLLECTION_CACHE_HOURS` | collection scan depth and membership cache TTL |
+| `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN` | OAuth2 credentials for the YouTube Data API (playlists sync) |
+| `KARAKEEP_YOUTUBE_LIST_ID` | umbrella list receiving every imported video (excluded from theme classification) |
+| `YT_EXCLUDED_LIST_IDS` | extra list ids never offered to the theme classifier |
+| `YT_MAX_PLAYLIST_PAGES`, `YT_MAX_BOOKMARK_PAGES` | pagination guard-rails (50 videos / 100 bookmarks per page) |
+| `YT_MAX_VIDEOS`, `YT_FULL_SWEEP_HOURS` | per-run import cap; hours between two full playlist re-scans |
 
 Instagram login (once, interactive — produces `DATA_DIR/session.json`):
 `instagrapi` session bootstrap; see `app/sync/instagram.py`.
