@@ -82,8 +82,8 @@ Touched files: `app/worker.py` (register workflow + activities),
 ```python
 @dataclass
 class ReorgOp:
-    kind: str  # "move_bookmark" | "add_to_list" | "create_list"
-    # (V3+: "rename_list", "merge_lists")
+    kind: str  # baseline: "move_bookmark" | "add_to_list"
+    # (V3+: "create_list"; V4+: "rename_list", "merge_lists")
     rationale: str
     confidence: float  # 0..1
     bookmark_id: str | None = None
